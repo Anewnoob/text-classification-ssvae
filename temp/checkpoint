@@ -1,0 +1,2 @@
+model_checkpoint_path: "imdb_2_2500_BN_lvae.pkt"
+all_model_checkpoint_paths: "imdb_2_2500_BN_lvae.pkt"

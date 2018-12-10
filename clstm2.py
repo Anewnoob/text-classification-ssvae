@@ -34,7 +34,7 @@ from tensorflow.python.ops import variable_scope as vs
 
 class ContextualRNNCell(object):
 
-    def __call__(self, inputs, state, scope=None):
+    def __call__(self, inputs, context, state, scope=None):
         raise NotImplementedError("Abstract method")
 
     @property
@@ -57,11 +57,10 @@ class ContextualRNNCell(object):
 
 
 class ContextualLSTMCell(ContextualRNNCell):
-    def __init__(self, num_units,l_y,forget_bias=1.0, input_size=None):
+    def __init__(self, num_units, forget_bias=1.0, input_size=None):
         self._num_units = num_units
         self._input_size = num_units if input_size is None else input_size
         self._forget_bias = forget_bias
-        self._label = l_y
 
     @property
     def input_size(self):
@@ -75,11 +74,10 @@ class ContextualLSTMCell(ContextualRNNCell):
     def state_size(self):
         return 2 * self._num_units
 
-    def __call__(self, inputs,state, scope=None):
+    def __call__(self, inputs, context, state, scope=None):
         with vs.variable_scope(scope or type(self).__name__):
             # Parameters of gates are concatenated into one multiply for efficiency.
             c, h = array_ops.split(1, 2, state)
-            context = self._label
             concat = _linear([inputs, h, context], 4 * self._num_units, True)
 
             # i = input_gate, j = new_input, f = forget_gate, o = output_gate
@@ -129,8 +127,8 @@ class ContextualMultiRNNCell(ContextualRNNCell):
         for i in xrange(len(cells) - 1):
             if cells[i + 1].input_size != cells[i].output_size:
                 raise ValueError("In MultiRNNCell, the input size of each next"
-                                 " cell must match the output size of the previous one."
-                                 " Mismatched output size in cell %d." % i)
+                         " cell must match the output size of the previous one."
+                         " Mismatched output size in cell %d." % i)
         self._cells = cells
 
     @property

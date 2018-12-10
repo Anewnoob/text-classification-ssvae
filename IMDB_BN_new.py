@@ -7,6 +7,7 @@ from tensorflow.python.layers.core import Dense
 from compiler.ast import flatten
 import matplotlib.pyplot as plt
 from utils.data_process import init_data
+import clstm
 
 batch_size=64
 iter_num=25#iter_number
@@ -279,8 +280,9 @@ def decoder(decoder_embed_input,l_y,decoder_y,target_length,max_target_length,l_
         h_states = tf.nn.softplus(tf.matmul(l_yzu, weights_de['w_']) + biases_de['b_'])
 
         decoder_initial_state = LSTMStateTuple(states[0], h_states)   #(C,H)
-
         decode_lstm = tf.contrib.rnn.LSTMCell(n_hidden, forget_bias=1.0, state_is_tuple=True)
+        # decoder_initial_state = clstm.LSTMStateTuple(states[0], h_states)   #(C,H)
+        # decode_lstm = clstm.BasicLSTMCell(n_hidden,l_y = l_y,forget_bias=1.0, state_is_tuple=True)
 
         decode_cell = tf.contrib.rnn.DropoutWrapper(decode_lstm, output_keep_prob=keep_prob)
         output_layer = Dense(n_input) #TOTAL_SIZE
@@ -312,11 +314,12 @@ def get_cost_l(decoder_embed_input,a_mean, a_stddev, z_mean, z_stddev,training_l
     return cost
 
 def get_cost_u(u_encoder_embed_input,u_decoder_embed_input):
+    l_a, l_z, states, a_mean, a_stddev, z_mean, z_stddev = encoder(u_encoder_embed_input, keep_prob=keep_prob,
+                                                                   reuse=True)
     for label in range(label_size):
         y_i=get_onehot(label)
-        l_a, l_z, states, a_mean, a_stddev, z_mean, z_stddev = encoder(u_encoder_embed_input, keep_prob=keep_prob,
-                                                                       reuse=True)
-        training_logits, masks, u_mean, u_stddev = decoder(u_decoder_embed_input, [y_i]*batch_size,vae_y_u[label],un_target_sequence_length,
+        vae_y = tf.to_float(tf.convert_to_tensor([y_i] * batch_size))
+        training_logits, masks, u_mean, u_stddev = decoder(u_decoder_embed_input,  vae_y,vae_y_u[label],un_target_sequence_length,
                                                            un_max_target_sequence_length, l_z, states, keep_prob,reuse=True)
         cost_l = get_cost_l(u_decoder_embed_input,a_mean, a_stddev, z_mean, z_stddev,training_logits, masks,u_mean,u_stddev)
 
@@ -409,7 +412,7 @@ cost_c=get_cost_c(pred)
 cost_u,L_ulab,prob_y=get_cost_u(u_encoder_embed_input,u_decoder_embed_input)
 
 cost_lu = tf.abs(cost_u - cost_l)
-cost=cost_c+tf.reduce_mean(cost_l+beta*cost_u)
+cost=cost_c+tf.reduce_mean(cost_l+cost_u)
 
 train_step = tf.train.AdamOptimizer(learning_rate=it_learning_rate).minimize(cost, global_step=global_step)
 with tf.control_dependencies([train_step, variables_averages_op]):

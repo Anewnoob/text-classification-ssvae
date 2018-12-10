@@ -8,6 +8,8 @@ from compiler.ast import flatten
 import matplotlib.pyplot as plt
 from utils.data_process import init_data
 import clstm
+import clstm2
+import tensorflow.contrib.slim as slim
 
 
 batch_size=64
@@ -91,7 +93,7 @@ def read_data():
         for i in lineArr:
             X.append(str(i))  # chanage to string or char type
         train_label.append(int(X[0]))
-        train_data.append(X[2:-1])      #del <GO> <EOS>
+        train_data.append(X[1:])
         train_item += 1
     train_pos = train_data[:int(Train_Size/2)]
     train_neg = train_data[-int(Train_Size/2):]
@@ -112,7 +114,7 @@ def read_data():
         for i in lineArr:
             X.append(str(i))  # chanage to string or char type
         test_label.append(int(X[0]))
-        test_data.append(X[2:-1])   #del <GO> <EOS>
+        test_data.append(X[1:])
         test_item += 1
     ftestdata.close()
 
@@ -124,7 +126,7 @@ def read_data():
         X = list()
         for i in lineArr:
             X.append(str(i))  # chanage to string or char type
-        unlabel_data.append(X[1:-1])  #del <GO> <EOS>
+        unlabel_data.append(X)
         unlabel_item += 1
     funlabeldata.close()
 
@@ -265,7 +267,7 @@ def classifer(encoder_embed_input,max_target_sequence_length,keep_prob=0.5,reuse
         pred = tf.nn.xw_plus_b(l_c, FC_W, FC_b)
         return pred
 
-def encoder(l_encoder_embed_input,l_y,keep_prob=0.5,reuse=False):
+def encoder(l_encoder_embed_input,keep_prob=0.5,reuse=False):
     with tf.variable_scope("encoder",reuse=reuse):
         encoder_input = tf.nn.embedding_lookup(dic_embeddings, l_encoder_embed_input)
         input_ = tf.transpose(encoder_input, [1, 0, 2])
@@ -281,41 +283,45 @@ def encoder(l_encoder_embed_input,l_y,keep_prob=0.5,reuse=False):
         samples = tf.random_normal(tf.shape(a_stddev))
         l_a = a_mean + tf.exp(a_stddev * 0.5) * samples
 
-        l_ax=tf.concat([l_x,l_a,l_y],1)
-        l_ax = tf.nn.relu(tf.layers.batch_normalization(l_ax, training=training, name="BN_1"))
+        l_ax=tf.concat([l_x,l_a],1)
+        #l_ax = tf.nn.relu(tf.layers.batch_normalization(l_ax, training=training, name="BN_1"))
         z_mean = tf.contrib.layers.fully_connected(inputs=l_ax, num_outputs=z_size, activation_fn=None,scope="z_mean")
         z_stddev = tf.contrib.layers.fully_connected(inputs=l_ax, num_outputs=z_size, activation_fn=None,scope="z_std")
 
         samples = tf.random_normal(tf.shape(z_stddev))
         l_z = z_mean + tf.exp(z_stddev * 0.5) * samples
         return l_a,l_z,states, a_mean, a_stddev,z_mean,z_stddev
-def decoder(decoder_embed_input,l_y,decoder_y,target_length,max_target_length,l_z,states,keep_prob=0.5,reuse=False):
+def decoder(decoder_embed_input,topic,l_y,decoder_y,target_length,max_target_length,l_z,states,keep_prob=0.5,reuse=False):
     with tf.variable_scope("decoder",reuse=reuse):
         #l_y = y_scale*l_y
         l_yz = tf.concat([l_y,l_z], 1)
-        l_yz = tf.nn.relu(tf.layers.batch_normalization(l_yz, training=training, name="BN_2"))
+        #l_yz = tf.nn.relu(tf.layers.batch_normalization(l_yz, training=training, name="BN_2"))
         u_mean = tf.contrib.layers.fully_connected(inputs=l_yz, num_outputs=a_size, activation_fn=None,scope="u_mean")
         u_stddev = tf.contrib.layers.fully_connected(inputs=l_yz, num_outputs=a_size, activation_fn=None,scope="u_std")
 
         samples = tf.random_normal(tf.shape(u_stddev))
         l_u = u_mean + tf.exp(u_stddev * 0.5) * samples
 
-        l_yzu = tf.concat([l_yz,l_u], 1)
+        l_yzu = tf.concat([l_u,l_y], 1)
         h_states = tf.nn.softplus(tf.matmul(l_yzu, weights_de['w_']) + biases_de['b_'])
 
-        #decoder_initial_state = clstm.LSTMStateTuple(states[0], h_states)   #(C,H)
-        #decode_lstm = clstm.BasicLSTMCell(n_hidden,label_size,n_input,forget_bias=1.0, state_is_tuple=True)
-        decoder_initial_state = LSTMStateTuple(states[0], h_states)   #(C,H)
+        decoder_topic = tf.to_int32(topic)
+        decoder_topic = tf.nn.embedding_lookup(dic_embeddings, decoder_topic)
+        decoder_topic = tf.reshape(decoder_topic,[batch_size,-1])
 
-        decode_lstm = tf.contrib.rnn.LSTMCell(n_hidden, forget_bias=1.0, state_is_tuple=True)
+        decoder_initial_state = clstm.LSTMStateTuple(states[0], h_states)  #(C,H)
+        decode_lstm = clstm.BasicLSTMCell(n_hidden,context = decoder_topic,l_y = l_y,forget_bias=1.0,state_is_tuple=True)
+
+        # decoder_initial_state = LSTMStateTuple(states[0], h_states)   #(C,H)
+        # decode_lstm = tf.contrib.rnn.LSTMCell(n_hidden, forget_bias=1.0, state_is_tuple=True)
 
         decode_cell = tf.contrib.rnn.DropoutWrapper(decode_lstm, output_keep_prob=keep_prob)
         output_layer = Dense(n_input) #TOTAL_SIZE
         decoder_input = tf.nn.embedding_lookup(dic_embeddings, decoder_embed_input)
-        #decoder_input=tf.concat([decoder_input,decoder_y],2)   #dic_embedding+y(one-hot)
+        decoder_input=tf.concat([decoder_input,decoder_y],2)   #dic_embedding+y(one-hot)
         training_helper = tf.contrib.seq2seq.TrainingHelper(inputs=decoder_input,
                                                             sequence_length=target_length)
-        training_decoder = tf.contrib.seq2seq.BasicDecoder(decode_cell, training_helper, decoder_initial_state,
+        training_decoder = tf.contrib.seq2seq.BasicDecoder(decode_cell, training_helper,decoder_initial_state,
                                                            output_layer)
         output, _, _ = tf.contrib.seq2seq.dynamic_decode(training_decoder,
                                                          impute_finished=True,
@@ -339,16 +345,18 @@ def get_cost_l(decoder_embed_input,a_mean, a_stddev, z_mean, z_stddev,training_l
     return cost
 
 def get_cost_u(u_encoder_embed_input,u_decoder_embed_input):
+    l_a, l_z, states, a_mean, a_stddev, z_mean, z_stddev = encoder(u_encoder_embed_input, keep_prob=keep_prob,
+                                                                   reuse=True)
     for label in range(label_size):
-        #y_i=get_onehot(label)
+        y_i=get_onehot(label)
+        vae_y = tf.to_float(tf.convert_to_tensor([y_i] * batch_size))
         if label == 0:
-            y_i = [neg_topic_index]*label_size
+            topic = [neg_topic_index]*label_size
         if label == 1:
-            y_i = [pos_topic_index]*label_size
-        vae_topic = tf.to_float(tf.convert_to_tensor([y_i] * batch_size))
-        l_a, l_z, states, a_mean, a_stddev, z_mean, z_stddev = encoder(u_encoder_embed_input, vae_topic, keep_prob=keep_prob,
-                                                                       reuse=True)
-        training_logits, masks, u_mean, u_stddev = decoder(u_decoder_embed_input, vae_topic,vae_topic_u[label],un_target_sequence_length,
+            topic = [pos_topic_index]*label_size
+        vae_topic = tf.to_float(tf.convert_to_tensor([topic] * batch_size))
+
+        training_logits, masks, u_mean, u_stddev = decoder(u_decoder_embed_input, vae_topic,vae_y,vae_y_u[label],un_target_sequence_length,
                                                            un_max_target_sequence_length, l_z, states, keep_prob,reuse=True)
         cost_l = get_cost_l(u_decoder_embed_input,a_mean, a_stddev, z_mean, z_stddev,training_logits, masks,u_mean,u_stddev)
 
@@ -411,7 +419,7 @@ def calc_kl(a_mean, a_stddev, z_mean, z_stddev,u_mean, u_stddev):
 #tensor definition
 with tf.name_scope("weight_inital"):
     weights_de={
-        'w_':tf.Variable(tf.random_normal([label_size+a_size+z_size,n_hidden],mean=0.0, stddev=0.01)),
+        'w_':tf.Variable(tf.random_normal([label_size+a_size,n_hidden],mean=0.0, stddev=0.01)),
         'out': tf.Variable(tf.random_normal([c_hidden+a_size, label_size])),
         'out2': tf.Variable(tf.random_normal([2*z_size, label_size]))
     }
@@ -452,20 +460,24 @@ MOVING_AVERAGE_DECAY = 0.99
 variable_averages = tf.train.ExponentialMovingAverage(MOVING_AVERAGE_DECAY, global_step)
 variables_averages_op = variable_averages.apply(tf.trainable_variables())
 
-l_a,l_z,states, a_mean, a_stddev,z_mean,z_stddev= encoder(l_encoder_embed_input,topic,keep_prob)
-training_logits,masks,u_mean,u_stddev = decoder(l_decoder_embed_input,topic,vae_topic,target_sequence_length,max_target_sequence_length,l_z,states,keep_prob)
+l_a,l_z,states, a_mean, a_stddev,z_mean,z_stddev= encoder(l_encoder_embed_input,keep_prob)
+training_logits,masks,u_mean,u_stddev = decoder(l_decoder_embed_input,topic,l_y,vae_y,target_sequence_length,max_target_sequence_length,l_z,states,keep_prob)
 cost_l=get_cost_l(l_decoder_embed_input,a_mean, a_stddev,z_mean,z_stddev,training_logits,masks,u_mean,u_stddev)
 
 pred=classifer(l_encoder_embed_input,max_target_sequence_length,keep_prob=keep_prob)
 cost_c=get_cost_c(pred)
 cost_u,L_ulab,prob_y=get_cost_u(u_encoder_embed_input,u_decoder_embed_input)
 cost_lu = tf.abs(cost_u - cost_l)
-cost=cost_c+tf.reduce_mean(cost_l+beta*cost_u)
+#cost=0.8*cost_c+tf.reduce_mean(cost_l+cost_u)
+cost=cost_c*2500 + tf.reduce_mean(cost_l*2500)+tf.reduce_mean(cost_u*25000)
+cost = cost/(2500+25000)
+
+#cost = cost_l
 
 
-loss_to_minimize = cost
+
 tvars = tf.trainable_variables()
-gradients = tf.gradients(loss_to_minimize, tvars, aggregation_method=tf.AggregationMethod.EXPERIMENTAL_TREE)
+gradients = tf.gradients(cost, tvars, aggregation_method=tf.AggregationMethod.EXPERIMENTAL_TREE)
 grads, global_norm = tf.clip_by_global_norm(gradients, 1.0)
 
 global_step = tf.Variable(0, name="global_step", trainable=False)
@@ -476,22 +488,27 @@ train_op = optimizer.apply_gradients(zip(grads, tvars), global_step=global_step,
 
 pred = tf.nn.softmax(pred)
 correct_pred=tf.equal(tf.argmax(pred,1),tf.argmax(l_y,1))
+correct_pred_f = tf.cast(correct_pred,tf.int32)
 accuracy=tf.reduce_mean(tf.cast(correct_pred,tf.float32))
 
 
 def train_model():
-    initial_learning_rate = 0.0002
+    initial_learning_rate = 0.0008
     learning_rate_len = 0.000008
     min_kl = 0.0
     min_kl_epoch = min_kl  # 退火参数
     kl_lens = 0.008
+    # exclude = ['classifier','bidirectional_rnn','bw','multi_rnn_cell','cell_0','basic_lstm_cell','bias','Adam_1']
+    # variables_to_restore = slim.get_variables_to_restore(exclude=exclude)
+    # saver = tf.train.Saver(variables_to_restore)
+
     saver=tf.train.Saver()
     initial = tf.global_variables_initializer()
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
     with tf.Session(config=config) as sess:
         sess.run(initial)
-        #saver.restore(sess, './temp/imdb_5_2500_con_lvae.pkt')
+        #saver.restore(sess, './temp/imdb_cost_l_2500_vae.pkt')
         print('Read train & test data')
 
         tempU = list(set(label_list))
@@ -578,7 +595,8 @@ def train_model():
                                                                               it_learning_rate: initial_learning_rate,latentscale_iter:min_kl_epoch,
                                                                               keep_prob: 0.5,target_sequence_length: pad_source_lengths,
                                                                               un_target_sequence_length:un_pad_source_lengths,alpha:alpha_epoch})
-                #print "p_y:",p_y,"ulab:",ulab
+                # if (step % 10 == 0 and step is not 0):
+                #     print "p_y:",p_y,"ulab:",ulab
                 #computing for P R F1
                 for i in range(len(pred_batch)):
                     value=pred_batch[i]
@@ -608,7 +626,7 @@ def train_model():
                 step+=1 # while
                 count+=1
             #out of bacth
-            print "p_y:", p_y, "ulab:", ulab
+            #print "p_y:", p_y,"ulab:", ulab,
             alpha_epoch+=alpha_value
 
             # Precision Recall, F1
@@ -647,6 +665,8 @@ def train_model():
                 max_acc = TEST_acc1
                 model_path = './temp/imdb_2_%d_BN_lvae.pkt'%Train_Size
                 saver.save(sess, model_path)
+        # model_path = './temp/imdb_cost_l_%d_vae.pkt' % Train_Size
+        # saver.save(sess, model_path)
         save_metrics(Learning_rate, TEST_P, TEST_R, TEST_F1, TEST_ACC1, root='./out_data/imdb_vae_ltests.txt')
         save_metrics(Learning_rate, TRAIN_P, TRAIN_R, TRAIN_F1, TRAIN_ACC1,root='./out_data/imdb_vae_ltrains.txt')
         draw_pic_metric(TRAIN_P, TRAIN_R, TRAIN_F1, TRAIN_ACC1, name='train')
@@ -680,8 +700,9 @@ def test_model(sess,testS,testL,epoch):
             user_mask_id.append(get_mask_index(testL[y_i], label_list))
             TEST_DIC.get(get_mask_index(testL[y_i], label_list))[2] += 1  # Groud value Groud Truth a+c
             batch_y.append(xsy_step)
-        c_pred,pred_batch=sess.run([correct_pred,pred],feed_dict={l_encoder_embed_input:sources_batch,l_y: batch_y,keep_prob: 1.0,
+        f_pred,c_pred,pred_batch=sess.run([correct_pred_f,correct_pred,pred],feed_dict={l_encoder_embed_input:sources_batch,l_y: batch_y,keep_prob: 1.0,
                                                                   target_sequence_length: pad_source_lengths,training:False})
+
         for i in range(len(pred_batch)):
             value = pred_batch[i]
             #print value
@@ -692,6 +713,11 @@ def test_model(sess,testS,testL,epoch):
                 acc += 1
                 TEST_DIC.get(user_mask_id[i])[0] += 1  # REAL value a
         step+=1 # while
+    c_y = np.concatenate((np.array(pred_batch), np.array(batch_y)), axis=1)
+    #c_y = np.concatenate((np.array(f_pred), c_y), axis=1)
+    for i,j in enumerate(c_y.tolist()):
+        j.append(int(f_pred[i]))
+        print j,i
     # Precision Recall, F1
     P = []
     R = []

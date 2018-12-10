@@ -338,7 +338,7 @@ class BasicLSTMCell(RNNCell):
   that follows.
   """
 
-  def __init__(self, num_units,label_size,embedding_size,forget_bias=1.0,
+  def __init__(self, num_units,label_size = None,embedding_size= None,context=None,l_y = None,forget_bias=1.0,
                state_is_tuple=True, activation=None, reuse=None):
     """Initialize the basic LSTM cell.
 
@@ -368,7 +368,8 @@ class BasicLSTMCell(RNNCell):
     self._activation = activation or math_ops.tanh
     self._label_size = label_size
     self._embedding_size = embedding_size
-    #self._label = decoder_y
+    self._context = context
+    self._label = l_y
 
   @property
   def state_size(self):
@@ -409,20 +410,24 @@ class BasicLSTMCell(RNNCell):
     #print(inputs.get_shape())
     #input [batch_size,None,embedding_size]
 
-    #word_embedding = array_ops.slice(inputs,[0,0],[-1,-1])
-    label_y = array_ops.slice(inputs,[0,self._embedding_size],[-1,self._label_size])
+    word_embedding = array_ops.slice(inputs,[0,0],[-1,self._embedding_size])
+    label = array_ops.slice(inputs,[0,self._embedding_size],[-1,self._label_size])
+    context = self._context
 
 
-    #input_list = [word_embedding,label_y]
-    #input_tensor = ops.convert_n_to_tensor(input_list)
+    input_list = [word_embedding,label]
+    input_tensor = ops.convert_n_to_tensor(input_list)
+    word_embedding = input_tensor[0]
+    label = input_tensor[1]
 
-    concat = _linear([inputs, h, label_y], 4 * self._num_units, bias=True)
+    concat = _linear([word_embedding,h,label], 4 * self._num_units, bias=True)
 
 
     #64,2   ->  64,512
     #label = ops.convert_n_to_tensor(self._label)
+    #label = self._label
 
-    lstm_label_matrix = _linear([label_y], self._num_units, _WEIGHTS_VARIABLE_NAME="weight_y",
+    lstm_label_matrix = _linear(label, self._num_units, _WEIGHTS_VARIABLE_NAME="weight_y",
                                 _BIAS_VARIABLE_NAME="bias_y",
                                 kernel_initializer=init_ops.RandomNormal(0.1), bias=False)
 
@@ -436,7 +441,7 @@ class BasicLSTMCell(RNNCell):
     #print(c.get_shape(),i.get_shape(),j.get_shape(),f.get_shape(),o.get_shape())
 
     new_c = (
-        c * sigmoid(f + self._forget_bias) + sigmoid(i) * self._activation(j))
+        c * sigmoid(f + self._forget_bias) + sigmoid(i) * self._activation(j)+self._activation(lstm_label_matrix))
     new_h = self._activation(new_c) * sigmoid(o)
 
     if self._state_is_tuple:

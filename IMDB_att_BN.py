@@ -241,6 +241,7 @@ def classifer(encoder_embed_input,max_target_sequence_length,keep_prob=0.5,reuse
         W = tf.Variable(tf.random_normal([c_hidden], stddev=0.1))
         h_state = fw_outputs + bw_outputs  # (batch_size, seq_len, HIDDEN_SIZE)
         h_state = tf.transpose(h_state, [1, 0, 2])
+        h_state = tf.layers.batch_normalization(h_state, training=training, name="BN_1")
         M = tf.tanh(h_state)  # M = tanh(h_state)  (batch_size, seq_len, HIDDEN_SIZE)
 
         alpha = tf.nn.softmax(tf.reshape(tf.matmul(tf.reshape(M, [-1, c_hidden]),
@@ -249,6 +250,8 @@ def classifer(encoder_embed_input,max_target_sequence_length,keep_prob=0.5,reuse
         r = tf.matmul(tf.transpose(h_state, [0, 2, 1]),   #(batch,hidden_size,seq_len)
                       tf.reshape(alpha, [-1, max_target_sequence_length, 1]))
         r = tf.squeeze(r)
+
+        r = tf.layers.batch_normalization(r, training=training, name="BN_2")
         l_c = tf.tanh(r)  # (batch , HIDDEN_SIZE)
         l_c = tf.nn.dropout(l_c, keep_prob)
 
@@ -285,7 +288,7 @@ def encoder(l_encoder_embed_input,keep_prob=0.5,reuse=False):
 def decoder(decoder_embed_input,l_y,decoder_y,target_length,max_target_length,l_z,states,keep_prob=0.5,reuse=False):
     with tf.variable_scope("decoder",reuse=reuse):
         #l_y = y_scale*l_y
-        l_yz = tf.concat([l_z,l_y], 1)
+        l_yz = tf.concat([l_y,l_z], 1)
         u_mean = tf.contrib.layers.fully_connected(inputs=l_yz, num_outputs=a_size, activation_fn=None,scope="u_mean")
         u_stddev = tf.contrib.layers.fully_connected(inputs=l_yz, num_outputs=a_size, activation_fn=None,scope="u_std")
 

@@ -28,7 +28,7 @@ data_path="../data/aclImdb"
 #define the weight and bias dictionary
 with tf.name_scope("weight_inital"):
     weights_de={
-        'w_':tf.Variable(tf.random_normal([label_size+z_size,n_hidden],mean=0.0, stddev=0.01)),
+        'w_':tf.Variable(tf.random_normal([z_size,n_hidden],mean=0.0, stddev=0.01)),
         'out': tf.Variable(tf.random_normal([2*c_hidden, label_size]))
     }
     biases_de = {
@@ -274,8 +274,6 @@ def decoder(decoder_embed_input,l_y,decoder_y,target_length,max_target_length,en
         # decode_lstm = tf.contrib.rnn.LSTMCell(n_hidden, forget_bias=1.0, state_is_tuple=True)
         decode_lstm = clstm.BasicLSTMCell(n_hidden,label_size = label_size,embedding_size=n_input,l_y = l_y,forget_bias=1.0, state_is_tuple=True)
         decode_cell = tf.contrib.rnn.DropoutWrapper(decode_lstm, output_keep_prob=keep_prob)
-
-
         decoder_initial_state = encode_state
         output_layer = Dense(n_input) #TOTAL_SIZE
         decoder_input_ = tf.concat([tf.fill([batch_size, 1], vocab_to_int['<GO>']), decoder_embed_input],1)  # add   1  GO to the end
@@ -306,8 +304,8 @@ def get_cost_l(encoder_embed_input,decoder_embed_input,l_y,decoder_y,target_sequ
     latent_loss = 0.5 * tf.reduce_sum(tf.exp(z_stddev) - 1. - z_stddev + tf.square(z_mean), 1)
     latent_cost = tf.reduce_mean(latent_loss)
 
-    l_zy = tf.concat([z, l_y], 1)
-    c_state = tf.nn.softplus(tf.matmul(l_zy, weights_de['w_']) + biases_de['b_'])
+
+    c_state = tf.nn.softplus(tf.matmul(z, weights_de['w_']) + biases_de['b_'])
     #c_state = tf.nn.softplus(tf.matmul(z, weights_de['w_2']) + biases_de['b_2'])
     #decoder_initial_state = LSTMStateTuple(c_state, encode_states[1])
     decoder_initial_state = clstm.LSTMStateTuple(c_state, encode_states[1])  # (C,H)
@@ -338,13 +336,7 @@ def get_cost_u(u_encoder_embed_input,u_decoder_embed_input):
             L_ulab = tf.identity(u_cost)
         else:
             L_ulab = tf.concat([L_ulab, u_cost],1)  #累加整个label_size中的值的loss
-            #考虑不同标签的损失，找到最小，能否给定权重？？？　　怎么定义权重？？？　
-            #L_ulab的值的范围是多少，能否通sigmod激活函数去改变值的范围    L_ulab(batch,label_size)
-    #print L_ulab.get_shape()
-    #label_sum_loss = tf.reduce_sum(L_ulab, 1)
-    #print label_sum_loss.get_shape()
-    #min_loss = tf.reduce_min(label_sum_loss,1)
-    #L_ulab = tf.clip_by_value(label_sum_loss,min_loss,min_loss)
+
     U = tf.reduce_sum(tf.multiply(L_ulab, prob_y),1) #- tf.multiply(prob_y, tf.log(prob_y)))  #    U(batch)
     return U,L_ulab,prob_y,loss_encropy
 def creat_y_scopus(label_y,seq_length): #label data
@@ -383,11 +375,12 @@ cost_u,L_ulab,prob_y,loss_encropy=get_cost_u(u_encoder_embed_input,u_decoder_emb
 
 #Unlabel_LOSS=tf.reduce_mean(bata*cost_u)
 
-alpha_c = 1 * 1 * ( Train_Size + 25000 ) / Train_Size
-cost=alpha_c*cost_c*2500 + tf.reduce_mean(cost_l)*2500+tf.reduce_mean(cost_u)*25000-loss_encropy*25000
-cost = cost/(25000+2500)
+#cost=cost_c + tf.reduce_mean(cost_l)+tf.reduce_mean(bata*cost_u)
+# alpha_c = 1 * 1 * ( Train_Size + 25000 ) / Train_Size
+# cost=alpha_c*cost_c*2500 + tf.reduce_mean(cost_l)*2500+tf.reduce_mean(cost_u)*25000-loss_encropy*25000
+# cost = cost/(25000+2500)
 
-#cost=cost_c+tf.reduce_mean(cost_l)
+cost=tf.reduce_mean(cost_l)
 #cost=tf.reduce_mean(cost_l)
 optimizer=tf.train.AdamOptimizer(learning_rate=it_learning_rate).minimize(cost)
 
@@ -407,9 +400,9 @@ def train_model():
     initial = tf.global_variables_initializer()
     with tf.Session() as  sess:
         sess.run(initial)
-        saver.restore(sess, './temp/imdb_cost_l_2500_clstm_vae.pkt')
+        #saver.restore(sess, './temp/imdb_cost_l_2500_clstm_vae.pkt')
         print('Read train & test data')
-        initial_learning_rate = 0.0004
+        initial_learning_rate = 0.00095
         learning_rate_len = 0.000008
         min_kl=0.0
         min_kl_epoch=min_kl #退火参数
@@ -685,12 +678,11 @@ def draw_pic_metric(P,R,F1,ACC1,name='train'):
     plt.show()
 
 def pretrain_label_seq():
-
     saver=tf.train.Saver()
     initial = tf.global_variables_initializer()
     with tf.Session() as  sess:
         sess.run(initial)
-        saver.restore(sess, './temp/imdb_cost_l_2500_clstm_vae.pkt')
+        #saver.restore(sess, './temp/imdb_cost_l_2500_clstm_vae.pkt')
         print('Read train & test data')
         initial_learning_rate = 0.0002
         learning_rate_len = 0.000008
@@ -760,7 +752,7 @@ def pretrain_label_seq():
             #print ('\nTRAIN RESULT')
             #print ('total train number', step * batch_size, 'learning rate', initial_learning_rate)
             print ('iter', epoch,'TRAIN LOSS', train_cost)
-        saver.save(sess, './temp/imdb_cost_l_2500_clstm_vae.pkt')
+        saver.save(sess, './temp/imdb_pre_2500_l.pkt')
 if __name__ == "__main__":
     train_model()
     #pretrain_label_seq()

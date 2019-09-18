@@ -429,14 +429,17 @@ class BasicLSTMCell(RNNCell):
 
     concat = _linear([word_embedding,h], 4 * self._num_units, bias=True)
 
-    # G_matrix = _linear([G,label], self._num_units, _WEIGHTS_VARIABLE_NAME="weight_G",
+    r = _linear([word_embedding, h], self._num_units, bias=True)
+    # G_matrix = _linear(G, self._num_units, _WEIGHTS_VARIABLE_NAME="weight_G",
     #                             _BIAS_VARIABLE_NAME="bias_G",
     #                             kernel_initializer=init_ops.RandomNormal(0.1), bias=False)
 
 
-    lstm_label_matrix = _linear(label, self._num_units, _WEIGHTS_VARIABLE_NAME="weight_y",
+    new_label = r * label
+
+    lstm_label_matrix = _linear(new_label, self._num_units, _WEIGHTS_VARIABLE_NAME="weight_y",
                                 _BIAS_VARIABLE_NAME="bias_y",
-                                kernel_initializer=init_ops.RandomNormal(0.1), bias=True)
+                                kernel_initializer=init_ops.RandomNormal(0.1), bias=False)
 
     #print(input_tensor[0], input_tensor[1])
     #concat = _linear([inputs, h], 4 * self._num_units, True)

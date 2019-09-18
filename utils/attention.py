@@ -52,7 +52,7 @@ def attention(inputs, attention_size, time_major=False, return_alphas=False):
 
     if time_major:
         # (T,B,D) => (B,T,D)
-        inputs = tf.array_ops.transpose(inputs, [1, 0, 2])
+        inputs = tf.transpose(inputs, [1, 0, 2])
 
     hidden_size = inputs.shape[2].value  # D value - hidden size of the RNN layer
 

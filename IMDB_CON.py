@@ -277,11 +277,10 @@ def decoder(decoder_embed_input,decoder_y,target_length,max_target_length,l_z,l_
 
         decode_lstm = tf.contrib.rnn.LSTMCell(n_hidden, forget_bias=1.0, state_is_tuple=True)
         decode_cell = tf.contrib.rnn.DropoutWrapper(decode_lstm, output_keep_prob=keep_prob)
-        output_layer = Dense(n_input) #TOTAL_SIZE
-        #decoder_input_ = tf.concat([tf.fill([batch_size, 1], vocab_to_int['<GO>']), decoder_embed_input],1)  # add   1  GO to the end
+        output_layer = Dense(n_input)
+
         decoder_input = tf.nn.embedding_lookup(dic_embeddings, decoder_embed_input)
         decoder_input=tf.concat([decoder_input,decoder_y],2)   #dic_embedding+y(one-hot)
-        # # input_=tf.transpose(decoder_input,[1,0,2])
         training_helper = tf.contrib.seq2seq.TrainingHelper(inputs=decoder_input,
                                                             sequence_length=target_length)
         training_decoder = tf.contrib.seq2seq.BasicDecoder(decode_cell, training_helper, decoder_initial_state,

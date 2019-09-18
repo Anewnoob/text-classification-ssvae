@@ -10,15 +10,15 @@ from utils.data_process import init_data
 
 
 #----------------------------------config-----------------------
-batch_size=10
+batch_size=64
 
 iter_num=30#iter_number
 embedding_size=250  #embedding size
-c_hidden=300 #classifer embedding
+c_hidden=512 #classifer embedding
 label_size=2
 Train_Size = 2500
 initial_learning_rate = 0.0004
-un_batch_size = int((25000/Train_Size)*batch_size)  #100
+un_batch_size = int((2500/Train_Size)*batch_size)  #100
 data_path="../data/aclImdb"
 
 #-----------------data procession function------------------------
@@ -62,7 +62,7 @@ def read_data():
     test_data = list()
     test_label =list()
     unlabel_data = list()
-    label_list = list()
+
 
     #train
     ftraindata = open(data_path+'/train_stopword_seq.txt','r')
@@ -233,16 +233,16 @@ training = tf.placeholder(tf.bool)
 keep_prob = tf.placeholder("float")
 alpha = tf.placeholder("float")
 it_learning_rate=tf.placeholder("float")
-l_y=tf.placeholder(dtype=tf.float32,shape=[batch_size,label_size])
+l_y=tf.placeholder(dtype=tf.float32,shape=[batch_size,label_size],name = 'label')
 #un_y=tf.placeholder(dtype=tf.float32,shape=[un_batch_size,label_size])
 target_sequence_length = tf.placeholder(tf.int32, [None], name='target_sequence_length')
 max_target_sequence_length = tf.reduce_max(target_sequence_length, name='max_target_len')
-un_target_sequence_length = tf.placeholder(tf.int32, [None], name='target_sequence_length')
-un_max_target_sequence_length = tf.reduce_max(un_target_sequence_length, name='max_target_len')
-l_decoder_embed_input = tf.placeholder(dtype=tf.int32, shape=[batch_size, None])
-l_encoder_embed_input = tf.placeholder(dtype=tf.int32, shape=[batch_size, None])
-u_encoder_embed_input = tf.placeholder(dtype=tf.int32, shape=[un_batch_size, None])
-u_decoder_embed_input = tf.placeholder(dtype=tf.int32, shape=[un_batch_size, None])
+un_target_sequence_length = tf.placeholder(tf.int32, [None], name='un_target_sequence_length')
+un_max_target_sequence_length = tf.reduce_max(un_target_sequence_length, name='un_max_target_len')
+l_decoder_embed_input = tf.placeholder(dtype=tf.int32, shape=[batch_size, None],name = 'l_dec_input')
+l_encoder_embed_input = tf.placeholder(dtype=tf.int32, shape=[batch_size, None],name = 'l_enc_input')
+u_encoder_embed_input = tf.placeholder(dtype=tf.int32, shape=[un_batch_size, None],name = 'u_enc_input')
+u_decoder_embed_input = tf.placeholder(dtype=tf.int32, shape=[un_batch_size, None],name = 'u_dec_input')
 latentscale_iter=tf.placeholder(dtype=tf.float32)
 
 
@@ -250,6 +250,21 @@ latentscale_iter=tf.placeholder(dtype=tf.float32)
 def get_cost_c(pred,l_y): #compute classifier cost
     cost=tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=pred,labels=l_y))
     return cost
+def layer_normalization(inputs,
+                        epsilon=1e-8,
+                        scope="ln",
+                        reuse=None):
+    with tf.variable_scope(scope, reuse=reuse):
+        inputs_shape = inputs.get_shape()
+        params_shape = inputs_shape[-1:]
+
+        mean, variance = tf.nn.moments(inputs, [-1], keep_dims=True)
+        beta = tf.Variable(tf.zeros(params_shape))
+        gamma = tf.Variable(tf.ones(params_shape))
+        normalized = (inputs - mean) / ((variance + epsilon) ** .5)
+        outputs = gamma * normalized + beta
+
+    return outputs
 def classifer(encoder_embed_input,max_target_sequence_length,keep_prob=0.5,reuse=False):
     with tf.variable_scope("classifier", reuse=reuse):
         encoder_input = tf.nn.embedding_lookup(dic_embeddings, encoder_embed_input)
@@ -277,39 +292,44 @@ def classifer(encoder_embed_input,max_target_sequence_length,keep_prob=0.5,reuse
         r = tf.squeeze(r)
         l_c = tf.tanh(r)  # (batch , HIDDEN_SIZE)
         l_c = tf.nn.dropout(l_c, keep_prob)
+        l_c = layer_normalization(l_c)
 
         FC_W = tf.Variable(tf.truncated_normal([c_hidden, label_size], stddev=0.1))
+        tf.add_to_collection("losses_c", tf.contrib.layers.l2_regularizer(0.001)(FC_W))
         FC_b = tf.Variable(tf.constant(0., shape=[label_size]))
         pred = tf.nn.xw_plus_b(l_c, FC_W, FC_b)
         return pred
 
-MOVING_AVERAGE_DECAY = 0.99
-global_step = tf.Variable(0, name="global_step", trainable=False)
-variable_averages = tf.train.ExponentialMovingAverage(MOVING_AVERAGE_DECAY, global_step)
-variables_averages_op = variable_averages.apply(tf.trainable_variables())
+
+
 
 pred=classifer(l_encoder_embed_input,max_target_sequence_length,keep_prob =keep_prob)
-un_pred=classifer(u_encoder_embed_input,un_max_target_sequence_length,keep_prob =1.,reuse = True)
+un_pred=classifer(u_encoder_embed_input,un_max_target_sequence_length,keep_prob =keep_prob,reuse = True)
 un_pred_index = tf.argmax(un_pred,1)
 un_y = tf.one_hot(un_pred_index,label_size)
+
 cost_c=get_cost_c(pred,l_y)
+tf.add_to_collection("losses_c", cost_c)
+cost_c = tf.add_n(tf.get_collection("losses_c"))
+
 un_cost_c = get_cost_c(un_pred,un_y)
-cost = cost_c + alpha*un_cost_c
+cost = cost_c #+ alpha*un_cost_c
 
 
 pred = tf.nn.softmax(pred)
 correct_pred=tf.equal(tf.argmax(pred,1),tf.argmax(l_y,1))
+correct_pred_f = tf.cast(correct_pred, tf.int32)
 accuracy=tf.reduce_mean(tf.cast(correct_pred,tf.float32))
 
 tvars = tf.trainable_variables()
+global_step = tf.Variable(0, name="global_step", trainable=False)
 gradients = tf.gradients(cost, tvars, aggregation_method=tf.AggregationMethod.EXPERIMENTAL_TREE)
 grads, global_norm = tf.clip_by_global_norm(gradients, 1.0)
 
 optimizer = tf.train.AdamOptimizer(learning_rate=it_learning_rate)
-train_step = optimizer.apply_gradients(zip(grads, tvars), global_step=global_step,
+train_op = optimizer.apply_gradients(zip(grads, tvars), global_step=global_step,
                                                name='train_step')
-with tf.control_dependencies([train_step, variables_averages_op]):
-    train_op = tf.no_op(name='train_op')
+
 
 
 def train_model():
@@ -383,7 +403,7 @@ def train_model():
                     TRAIN_DIC.get(get_mask_index(new_trainL[y_i], label_list))[2]+=1 #Groud value Groud Truth a+c
                     batch_y.append(xsy_step)
 
-                pred_batch,c_pred,op,batch_cost,c_cost=sess.run([pred,correct_pred,train_op,cost,cost_c],
+                un_pred_batch,pred_batch,c_pred,op,batch_cost,c_cost=sess.run([un_pred,pred,correct_pred,train_op,cost,cost_c],
                                                                               feed_dict={
                                                                               l_encoder_embed_input:sources_batch,
                                                                               l_y:batch_y,training:True,
@@ -392,6 +412,7 @@ def train_model():
                                                                               keep_prob: 0.5,target_sequence_length: pad_source_lengths,
                                                                               un_target_sequence_length:un_pad_source_lengths,alpha:alpha_u})
                 #computing for P R F1
+                print "un", un_pred_batch
                 for i in range(len(pred_batch)):
                     value=pred_batch[i]
                     top1=np.argpartition(a=-value,kth=0)[:1]
@@ -410,7 +431,7 @@ def train_model():
                 step+=1 # while
                 count+=1
             #out of bacth
-
+            #print "un",un_pred_batch
 
             # Precision Recall, F1
             P = []
@@ -443,7 +464,7 @@ def train_model():
             TEST_ACC1.append(TEST_acc1)
             Learning_rate.append(initial_learning_rate)
 
-        saver.save(sess, './temp/bk_tul_lvae.pkt')
+        #saver.save(sess, './temp/bk_tul_lvae.pkt')
         save_metrics(Learning_rate, TEST_P, TEST_R, TEST_F1, TEST_ACC1, root='./out_data/bk_vae_ltests.txt')
         save_metrics(Learning_rate, TRAIN_P, TRAIN_R, TRAIN_F1, TRAIN_ACC1,root='./out_data/bk_vae_ltrains.txt')
         draw_pic_metric(TRAIN_P, TRAIN_R, TRAIN_F1, TRAIN_ACC1, name='train')
@@ -454,6 +475,9 @@ def train_model():
 def test_model(sess,testS,testL,epoch):
     step = 0
     acc = 0
+    testL = testL[:2500]
+    testS = testS[:2500]
+
     tempU = list(set(label_list))
     TEST_DIC = {}
     for i in range(len(tempU)):
@@ -472,7 +496,7 @@ def test_model(sess,testS,testL,epoch):
             user_mask_id.append(get_mask_index(testL[y_i], label_list))
             TEST_DIC.get(get_mask_index(testL[y_i], label_list))[2] += 1  # Groud value Groud Truth a+c
             batch_y.append(xsy_step)
-        c_pred,pred_batch=sess.run([correct_pred,pred],feed_dict={l_encoder_embed_input:sources_batch, l_y: batch_y,
+        f_pred,c_pred,pred_batch=sess.run([correct_pred_f,correct_pred,pred],feed_dict={l_encoder_embed_input:sources_batch,l_y: batch_y,
                                                                            keep_prob: 1.0,training:False,
                                                                            target_sequence_length: pad_source_lengths})
         for i in range(len(pred_batch)):
@@ -483,6 +507,10 @@ def test_model(sess,testS,testL,epoch):
                 acc += 1
                 TEST_DIC.get(user_mask_id[i])[0] += 1  # REAL value a
         step+=1 # while
+    # c_y = np.concatenate((np.array(pred_batch), np.array(batch_y)), axis=1)
+    # for i, j in enumerate(c_y.tolist()):
+    #     j.append(int(f_pred[i]))
+    #     print j, i
     # Precision Recall, F1
     P = []
     R = []

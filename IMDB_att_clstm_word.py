@@ -626,7 +626,7 @@ def train_model():
                 step+=1 # while
                 count+=1
             #out of bacth
-            #print "p_y:", p_y,"ulab:", ulab,
+            print "p_y:", p_y,"ulab:", ulab,
             alpha_epoch+=alpha_value
 
             # Precision Recall, F1

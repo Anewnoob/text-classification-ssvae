@@ -4,8 +4,8 @@ import sys
 from nltk.corpus import stopwords
 import nltk
 
-reload(sys)
-sys.setdefaultencoding('utf8')
+#reload(sys)
+#sys.setdefaultencoding('utf8')
 
 
 def load_train(path):
@@ -77,6 +77,7 @@ def load_wdict(path):
 
 def merge_file(path):
     '''merge the file'''
+    print ("merge file")
     pos_location = path + '/pos'
     pos_files = os.listdir(pos_location)
     neg_location = path + '/neg'
@@ -103,6 +104,7 @@ def merge_file(path):
         neg_all.write('\n')
     pos_all.close()
     neg_all.close()
+
 def merge_all(path):
     '''merge all'''
     all =[]
@@ -116,7 +118,7 @@ def merge_all(path):
         line = f.readlines()
         new_line = []
         for i in line:
-            i = i[2:]# del label
+            i = i[1:]# del label
             new_line.append(i)
         all.extend(new_line)
     with open(path+"/all_stopword_seq.txt",'a') as f:
@@ -150,26 +152,28 @@ def handle_data(data):
     seq = []        #nD  [[],[],[],[],[],...,[]]
     #seqtence = []   #1D  []
     #nltk.download()
-    stop_words = set(stopwords.words('english'))
+    #stop_words = set(stopwords.words('english2'))
     symbol = set(stopwords.words('symbol'))
     for con in data:
-        con = con.decode("utf-8")
-        words = nltk.word_tokenize(con)
+        #con = con.decode("utf-8")
         line = []
+        words = nltk.word_tokenize(con)
         for word in words:
             word = word.lower()
-            if word.isalpha() and word not in stop_words and word not in symbol:
+            if word not in symbol: #word.isalpha()
                 line.append(word)
         seq.append(line)
     return seq
+
 def write_data(path,seq_list,label = None):
     if not os.path.exists(path + '_stopword_seq.txt'):
         with open(path + '_stopword_seq.txt','a')as f:
             for index,seq in enumerate(seq_list):
                 seq = [str(i) for i in seq]
-                s = '<GO> ' + " ".join(seq) + ' <EOS>'
+                s = " <GO> "+" ".join(seq)+" <EOS>"
+                #s = " ".join(seq)
                 if label:
-                    s = str(label[index]) +" "+s
+                    s = str(label[index]) + s
                 f.write(s)
                 f.write('\n')
 
@@ -190,27 +194,29 @@ def init_data(data_path,embeddings_size):
             os.remove(data_path+"/test_stopword_seq.txt")
         #write and load data set
         train_x,train_y = list(load_train(train_path))       #tuple to list
+        write_data(train_path, train_x, train_y)
         test_x,test_y = list(load_test(test_path))
+        write_data(test_path, test_x, test_y)
         unlabel = load_unsup(unlabel_path)
+        write_data(unlabel_path+"_unlabel", unlabel)
         #wdict = load_wdict(wdict_path)
 
-        print "write..."
-        write_data(train_path, train_x, train_y)
-        write_data(test_path, test_x, test_y)
-        write_data(unlabel_path+"_unlabel", unlabel)
         if os.path.exists(data_path+"/all_stopword_seq.txt"):
             os.remove(data_path+"/all_stopword_seq.txt")
         merge_all(data_path)
     else:
         if not os.path.exists(data_path+"/all_stopword_seq.txt"):
-            print "merge all..."
+            print ("merge all...")
             merge_all(data_path)
 
-    if not os.path.exists(data_path+"/all_250_vec.txt"):
+    embeddings_path = "/all_%d_vec.txt"%embeddings_size
+    if not os.path.exists(data_path+embeddings_path):
         #word2ec
-        print "word2vec..."
+        print ("word2vec...")
         command = "word2vec -train all_stopword_seq.txt -output all_%d_vec.txt -size %d -window 5 -sample 1e-4 -negative 5 -hs 0 -binary 0 -cbow 1 -iter 3"%(embeddings_size,embeddings_size)
         os.system("cd %s;%s"%(data_path,command))
-    print "-------------data process down------------"
+    print ("\n-------------data process down------------")
 
-#init_data(data_path="../../data/aclImdb",embeddings_size = 250)
+
+if __name__ == '__main__':
+    init_data(data_path="../../data/aclImdb",embeddings_size = 250)

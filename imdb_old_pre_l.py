@@ -8,23 +8,29 @@ from compiler.ast import flatten
 import matplotlib.pyplot as plt
 from utils.data_process import init_data
 import clstm
+import tensorflow.contrib.slim as slim
 
-
-batch_size=64
-iter_num=25#iter_number
+batch_size=10
+iter_num=30#iter_number
 n_input=250  #embedding size
 n_hidden=512 #vae embeddings
 c_hidden=300 #classifer embedding
-max_len = 64
-beta=0.5
+bata=0.5
 z_size=100
-a_size = 50
 label_size=2
 Train_Size = 2500
+un_batch_size = int((25000/Train_Size)*batch_size)  #100
 data_path="../data/aclImdb"
-is_training = True
-
-
+#define the weight and bias dictionary
+with tf.name_scope("weight_inital"):
+    weights_de={
+        'w_':tf.Variable(tf.random_normal([z_size,n_hidden],mean=0.0, stddev=0.01)),
+        'out': tf.Variable(tf.random_normal([2*c_hidden, label_size]))
+    }
+    biases_de = {
+    'b_': tf.Variable(tf.random_normal([n_hidden], mean=0.0, stddev=0.01)),
+    'out': tf.Variable(tf.random_normal([label_size]))
+    }
 
 #-----------------data procession function------------------------
 def get_onehot(index):
@@ -158,20 +164,6 @@ def get_new_table_X(total_data):
                 new_table_X[total_data[i_][j_]] = table_X[total_data[i_][j_]]
     return new_table_X
 
-def sort_dataset(dataset,label = None):
-    index_T = {}
-    new_data = []
-    new_label = []
-    for i in range(len(dataset)):
-        index_T[i] = len(dataset[i])
-    temp_size = sorted(index_T.items(), key=lambda item: item[1])
-    for i in range(len(temp_size)):
-        id = temp_size[i][0]
-        new_data.append(dataset[id])
-        if label:
-            new_label.append(label[id])
-    return new_data,new_label
-
 
 """ start data processing"""
 #init
@@ -201,92 +193,78 @@ new_train_data = convert2int(train_data)
 new_test_data  = convert2int(test_data)
 new_unlabel_data = convert2int(unlabel_data)
 
-# sort for train dataset
-new_trainS, new_trainL = sort_dataset(new_train_data, train_label)
-new_testS, new_testL = sort_dataset(new_test_data, test_label)
-new_unlabelS, _ = sort_dataset(new_unlabel_data)
-
 dic_embeddings = dic_em()
+print ('Dictionary Size',len(dic_embeddings))
 """ end data processing"""
 
-#-----------------------------------VAE-LOST------------------------------------
+dic_embeddings=tf.constant(dic_embeddings)
 
+#-----------------------------------VAE-LOST------------------------------------
 def classifer(encoder_embed_input,max_target_sequence_length,keep_prob=0.5,reuse=False):
     with tf.variable_scope("classifier",reuse=reuse):
-        encoder_input = tf.nn.embedding_lookup(dic_embeddings, encoder_embed_input)
-        #LSTM
-        input_=tf.transpose(encoder_input,[1,0,2])
-        fw_lstm_cell = tf.contrib.rnn.BasicLSTMCell(c_hidden, forget_bias=1.0,state_is_tuple=True)  #state_is_tuple=True
-        fw_lstm_cell = tf.contrib.rnn.DropoutWrapper(fw_lstm_cell, output_keep_prob=keep_prob)  # 加入dropout
-        bw_lstm_cell = tf.contrib.rnn.BasicLSTMCell(c_hidden, forget_bias=1.0,state_is_tuple=True)  #state_is_tuple=True
-        bw_lstm_cell = tf.contrib.rnn.DropoutWrapper(bw_lstm_cell, output_keep_prob=keep_prob)  # 加入dropout
-        cell_fw = tf.nn.rnn_cell.MultiRNNCell([fw_lstm_cell], state_is_tuple=True)
-        cell_bw = tf.nn.rnn_cell.MultiRNNCell([bw_lstm_cell], state_is_tuple=True)
-        (outputs, states) = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, input_, dtype=tf.float32, time_major=True)
-        #attention
-        fw_outputs, bw_outputs = outputs
-        W = tf.Variable(tf.random_normal([c_hidden], stddev=0.1))
-        h_state = fw_outputs + bw_outputs  # (batch_size, seq_len, HIDDEN_SIZE)
-        h_state = tf.transpose(h_state, [1, 0, 2])
-        M = tf.tanh(h_state)  # M = tanh(h_state)  (batch_size, seq_len, HIDDEN_SIZE)
+        with tf.variable_scope("classifier", reuse=reuse):
+            encoder_input = tf.nn.embedding_lookup(dic_embeddings, encoder_embed_input)
+            # LSTM
+            input_ = tf.transpose(encoder_input, [1, 0, 2])
+            fw_lstm_cell = tf.contrib.rnn.BasicLSTMCell(c_hidden, forget_bias=1.0,
+                                                        state_is_tuple=True)  # state_is_tuple=True
+            fw_lstm_cell = tf.contrib.rnn.DropoutWrapper(fw_lstm_cell, output_keep_prob=keep_prob)  # 加入dropout
+            bw_lstm_cell = tf.contrib.rnn.BasicLSTMCell(c_hidden, forget_bias=1.0,
+                                                        state_is_tuple=True)  # state_is_tuple=True
+            bw_lstm_cell = tf.contrib.rnn.DropoutWrapper(bw_lstm_cell, output_keep_prob=keep_prob)  # 加入dropout
+            cell_fw = tf.nn.rnn_cell.MultiRNNCell([fw_lstm_cell], state_is_tuple=True)
+            cell_bw = tf.nn.rnn_cell.MultiRNNCell([bw_lstm_cell], state_is_tuple=True)
+            (outputs, states) = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, input_, dtype=tf.float32,
+                                                                time_major=True)
+            # attention
+            fw_outputs, bw_outputs = outputs
+            W = tf.Variable(tf.random_normal([c_hidden], stddev=0.1))
+            h_state = fw_outputs + bw_outputs  # (batch_size, seq_len, HIDDEN_SIZE)
+            h_state = tf.transpose(h_state, [1, 0, 2])
+            M = tf.tanh(h_state)  # M = tanh(h_state)  (batch_size, seq_len, HIDDEN_SIZE)
 
-        alpha = tf.nn.softmax(tf.reshape(tf.matmul(tf.reshape(M, [-1, c_hidden]),
-                                                        tf.reshape(W, [-1, 1])),
-                                              (-1, max_target_sequence_length)))  # batch_size x seq_len
-        r = tf.matmul(tf.transpose(h_state, [0, 2, 1]),   #(batch,hidden_size,seq_len)
-                      tf.reshape(alpha, [-1, max_target_sequence_length, 1]))
-        r = tf.squeeze(r)
-        l_c = tf.tanh(r)  # (batch , HIDDEN_SIZE)
-        l_c = tf.nn.dropout(l_c, keep_prob)
+            alpha = tf.nn.softmax(tf.reshape(tf.matmul(tf.reshape(M, [-1, c_hidden]),
+                                                       tf.reshape(W, [-1, 1])),
+                                             (-1, max_target_sequence_length)))  # batch_size x seq_len
+            r = tf.matmul(tf.transpose(h_state, [0, 2, 1]),  # (batch,hidden_size,seq_len)
+                          tf.reshape(alpha, [-1, max_target_sequence_length, 1]))
+            r = tf.squeeze(r)
+            l_c = tf.tanh(r)  # (batch , HIDDEN_SIZE)
+            l_c = tf.nn.dropout(l_c, keep_prob)
 
-        FC_W = tf.Variable(tf.truncated_normal([c_hidden, label_size], stddev=0.1))
-        FC_b = tf.Variable(tf.constant(0., shape=[label_size]))
-        pred = tf.nn.xw_plus_b(l_c, FC_W, FC_b)
-        return pred
+            # l_ac = tf.concat([l_c, l_a], 1)  # a [batch a_size]
 
-def encoder(l_encoder_embed_input,keep_prob=0.5,reuse=False):
+            FC_W = tf.Variable(tf.truncated_normal([c_hidden, label_size], stddev=0.1))
+            FC_b = tf.Variable(tf.constant(0., shape=[label_size]))
+            pred = tf.nn.xw_plus_b(l_c, FC_W, FC_b)
+            return pred
+def encoder(encoder_embed_input,y,keep_prob=0.5,reuse=False):
     with tf.variable_scope("encoder",reuse=reuse):
-        encoder_input = tf.nn.embedding_lookup(dic_embeddings, l_encoder_embed_input)
-        input_ = tf.transpose(encoder_input, [1, 0, 2])
-        encode_lstm = tf.contrib.rnn.LSTMCell(n_hidden, forget_bias=1.0, state_is_tuple=True)
+        encoder_input = tf.nn.embedding_lookup(dic_embeddings, encoder_embed_input)
+        input_=tf.transpose(encoder_input,[1,0,2])
+        encode_lstm = tf.contrib.rnn.LSTMCell(n_hidden,forget_bias=1.0, state_is_tuple=True)
         encode_cell = tf.contrib.rnn.DropoutWrapper(encode_lstm, output_keep_prob=keep_prob)
         (outputs, states) = tf.nn.dynamic_rnn(encode_cell, input_, time_major=True, dtype=tf.float32)
-
-        l_x = states[-1]
-        l_x_to_a = tf.contrib.layers.fully_connected(inputs=l_x, num_outputs=a_size, activation_fn=None,scope="x-to-a")
-        a_mean = tf.contrib.layers.fully_connected(inputs=l_x_to_a, num_outputs=a_size, activation_fn=None,scope="a_mean")
-        a_stddev = tf.contrib.layers.fully_connected(inputs=l_x_to_a, num_outputs=a_size, activation_fn=None,scope="a_std")
-
-        samples = tf.random_normal(tf.shape(a_stddev))
-        l_a = a_mean + tf.exp(a_stddev * 0.5) * samples
-
-        l_ax=tf.concat([l_x,l_a],1)
-        z_mean = tf.contrib.layers.fully_connected(inputs=l_ax, num_outputs=z_size, activation_fn=None,scope="z_mean")
-        z_stddev = tf.contrib.layers.fully_connected(inputs=l_ax, num_outputs=z_size, activation_fn=None,scope="z_std")
-
-        samples = tf.random_normal(tf.shape(z_stddev))
-        l_z = z_mean + tf.exp(z_stddev * 0.5) * samples
-        return l_a,l_z,states, a_mean, a_stddev,z_mean,z_stddev
-def decoder(decoder_embed_input,l_y,decoder_y,target_length,max_target_length,l_z,states,keep_prob=0.5,reuse=False):
+        #new_states = states[-1]  states  tuple  (c,h)
+        #print y
+        new_states=tf.concat([states[-1],y],1)
+        o_mean = tf.contrib.layers.fully_connected(inputs=new_states, num_outputs=z_size, activation_fn=None,
+                                                   scope="z_mean")
+        o_stddev = tf.contrib.layers.fully_connected(inputs=new_states, num_outputs=z_size, activation_fn=None,
+                                                     scope="z_std")
+        return outputs, states, o_mean, o_stddev
+def decoder(decoder_embed_input,decoder_y,target_length,max_target_length,encode_state,batch_size,keep_prob,reuse=False):
     with tf.variable_scope("decoder",reuse=reuse):
-        #l_y = y_scale*l_y
-        l_yz = tf.concat([l_z,l_y], 1)
-        u_mean = tf.contrib.layers.fully_connected(inputs=l_yz, num_outputs=a_size, activation_fn=None,scope="u_mean")
-        u_stddev = tf.contrib.layers.fully_connected(inputs=l_yz, num_outputs=a_size, activation_fn=None,scope="u_std")
-
-        samples = tf.random_normal(tf.shape(u_stddev))
-        l_u = u_mean + tf.exp(u_stddev * 0.5) * samples
-
-        l_yzu = tf.concat([l_yz,l_u,l_y], 1)
-        h_states = tf.nn.softplus(tf.matmul(l_yzu, weights_de['w_']) + biases_de['b_'])
-
-        decoder_initial_state = clstm.LSTMStateTuple(states[0], h_states)   #(C,H)
-        decode_lstm = clstm.LSTMCell(n_hidden,label_size,n_input,forget_bias=1.0, state_is_tuple=True)
-
+        #decode_lstm = tf.contrib.rnn.LSTMCell(n_hidden, forget_bias=1.0, state_is_tuple=True)
+        decode_lstm = clstm.BasicLSTMCell(n_hidden, label_size=label_size, embedding_size=n_input,
+                                          forget_bias=1.0, state_is_tuple=True)
         decode_cell = tf.contrib.rnn.DropoutWrapper(decode_lstm, output_keep_prob=keep_prob)
+        decoder_initial_state = encode_state
         output_layer = Dense(n_input) #TOTAL_SIZE
-        decoder_input = tf.nn.embedding_lookup(dic_embeddings, decoder_embed_input)
+        decoder_input_ = tf.concat([tf.fill([batch_size, 1], vocab_to_int['<GO>']), decoder_embed_input],1)  # add   1  GO to the end
+        decoder_input = tf.nn.embedding_lookup(dic_embeddings, decoder_input_)
         decoder_input=tf.concat([decoder_input,decoder_y],2)   #dic_embedding+y(one-hot)
+        # # input_=tf.transpose(decoder_input,[1,0,2])
         training_helper = tf.contrib.seq2seq.TrainingHelper(inputs=decoder_input,
                                                             sequence_length=target_length)
         training_decoder = tf.contrib.seq2seq.BasicDecoder(decode_cell, training_helper, decoder_initial_state,
@@ -294,44 +272,55 @@ def decoder(decoder_embed_input,l_y,decoder_y,target_length,max_target_length,l_
         output, _, _ = tf.contrib.seq2seq.dynamic_decode(training_decoder,
                                                          impute_finished=True,
                                                          maximum_iterations=max_target_length)
-
+        predicting_logits = tf.identity(output.sample_id, name='predictions')
         training_logits = tf.identity(output.rnn_output, 'logits')
         masks = tf.sequence_mask(target_length, max_target_length, dtype=tf.float32, name='masks') #(batch_size,max_target_length)
-        return training_logits,masks,u_mean,u_stddev
-
+        #target = tf.concat([target_input, tf.fill([batch_size, 1], vocab_to_int['<EOS>'])], 1)  #
+        target = decoder_embed_input
+        return output,predicting_logits,training_logits,masks,target
 def get_cost_c(pred): #compute classifier cost
     cost=tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=pred,labels=l_y))
     return cost
+def get_cost_l(encoder_embed_input,decoder_embed_input,l_y,decoder_y,target_sequence_length,max_target_sequence_length,batch_size,reuse=False):
+    encode_outputs, encode_states, z_mean, z_stddev = encoder(encoder_embed_input,l_y, keep_prob,reuse)
+    samples = tf.random_normal(tf.shape(z_stddev))
+    z = z_mean + tf.exp(z_stddev * 0.5) * samples
+    #KL term-------------
+    latent_loss = 0.5 * tf.reduce_sum(tf.exp(z_stddev) - 1. - z_stddev + tf.square(z_mean), 1)
+    latent_cost = tf.reduce_mean(latent_loss)
 
-def get_cost_l(decoder_embed_input,a_mean, a_stddev, z_mean, z_stddev,training_logits, masks,u_mean,u_stddev):
-    kl_loss,kl_cost = calc_kl(a_mean, a_stddev, z_mean, z_stddev,u_mean, u_stddev)
+    c_state = tf.nn.softplus(tf.matmul(z, weights_de['w_']) + biases_de['b_'])
+    #c_state = tf.nn.softplus(tf.matmul(z, weights_de['w_2']) + biases_de['b_2'])
+    #decoder_initial_state = LSTMStateTuple(c_state, encode_states[1])
+    decoder_initial_state = clstm.LSTMStateTuple(c_state, encode_states[1])
+    decoder_output, predicting_logits, training_logits, masks, target = decoder(decoder_embed_input,decoder_y,target_sequence_length,max_target_sequence_length,decoder_initial_state,batch_size,keep_prob,reuse)
+
+    #laten_ = latentscale_iter * tf.reduce_mean(latent_loss)
+
+    #encropy_loss = tf.contrib.seq2seq.sequence_loss(training_logits, target, masks)
     decoder_input=tf.nn.embedding_lookup(dic_embeddings, decoder_embed_input)
     s_loss=tf.square(training_logits-decoder_input)            #batch,len,embeding_size
     mask_loss = tf.reduce_sum(tf.transpose(s_loss, [2, 0, 1]), 0)  # mask_loss (bacth_size,max_len_seq)
     encropy_loss = tf.reduce_mean(tf.multiply(mask_loss, masks), 1)  #还原句子长度 其余位置都是0　　multiply　点乘
-    cost = tf.add(encropy_loss, (latentscale_iter * (kl_loss)))   #cost  (batch_size)
-    return cost,encropy_loss,kl_loss
 
+    cost = tf.add(encropy_loss, (latentscale_iter * (latent_loss)))   #cost  (batch_size)
+
+    #print 'cost',cost
+    return cost
 def get_cost_u(u_encoder_embed_input,u_decoder_embed_input):
+    prob_y=classifer(u_encoder_embed_input,un_max_target_sequence_length-1,keep_prob=keep_prob,reuse=True)
+    prob_y=tf.nn.softmax(prob_y)
     for label in range(label_size):
-        y_i=get_onehot(0)
-        l_a, l_z, states, a_mean, a_stddev, z_mean, z_stddev = encoder(u_encoder_embed_input, keep_prob=keep_prob,
-                                                                       reuse=True)
-        training_logits, masks, u_mean, u_stddev = decoder(u_decoder_embed_input, [y_i]*batch_size,vae_y_u[label],un_target_sequence_length,
-                                                           un_max_target_sequence_length, l_z, states, keep_prob,reuse=True)
-        cost_l,encropy_loss,kl_loss = get_cost_l(u_decoder_embed_input,a_mean, a_stddev, z_mean, z_stddev,training_logits, masks,u_mean,u_stddev)
-
+        y_i=get_onehot(label)
+        cost_l =get_cost_l(u_encoder_embed_input,u_decoder_embed_input,[y_i]*un_batch_size,vae_y_u[label],un_target_sequence_length,un_max_target_sequence_length,un_batch_size,reuse=True)
         u_cost = tf.expand_dims(cost_l, 1)  # 在cost_l张量中的第１个位置（从０开始）增加一个维度 cost_l (batch) u_cost(batch,1)
         if label == 0:
             L_ulab = tf.identity(u_cost)
         else:
-            L_ulab = tf.concat([L_ulab, u_cost],1)  #label_size loss
-    #均值 方差
-    prob_y  = classifer(u_encoder_embed_input,un_max_target_sequence_length,keep_prob=keep_prob,reuse=True)
-    prob_y = tf.nn.softmax(prob_y)
-    loss_encropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=prob_y, labels=prob_y))
+            L_ulab = tf.concat([L_ulab, u_cost],1)  #累加整个label_size中的值的loss
+
     U = tf.reduce_sum(tf.multiply(L_ulab, prob_y),1) #- tf.multiply(prob_y, tf.log(prob_y)))  #    U(batch)
-    return U,L_ulab,prob_y,encropy_loss,kl_loss,loss_encropy
+    return U,L_ulab,prob_y
 def creat_y_scopus(label_y,seq_length): #label data
     lcon_y= [label_y for j in range(seq_length)]
     return lcon_y
@@ -340,128 +329,84 @@ def creat_u_y_scopus(seq_length): #unlabel data
     for i in range(label_size):
         label_y=get_onehot(i)
         temp=[]
-        for j in range(batch_size):
+        for j in range(un_batch_size):
             temp.append(creat_y_scopus(label_y, seq_length))
         ucon_y.append(temp)
     return ucon_y
-def calc_kl(a_mean, a_stddev, z_mean, z_stddev,u_mean, u_stddev):
-    # KL term-------------
-    latent_loss_pz = 0.5 * tf.reduce_sum(tf.log(2 * np.pi) + (tf.square(z_mean) + tf.exp(1e-8 + z_stddev)), 1)
-    latent_cost_pz = tf.reduce_mean(latent_loss_pz)
-
-    latent_loss_qz = 0.5 * tf.reduce_sum((tf.log(2 * np.pi) + 1 + z_stddev), 1)
-    latent_cost_qz = tf.reduce_mean(latent_loss_qz)
-
-    #0.5 * tf.reduce_sum(tf.log(2 * np.pi) + (tf.square(z_mean) + tf.exp(1e-8 + z_stddev)), 1)
-    latent_loss_qa = 0.5 * tf.reduce_sum((tf.log(2 * np.pi) + 1 + a_stddev), 1)
-    latent_cost_qa = tf.reduce_mean(latent_loss_qa)
-
-    latent_loss_qau = 0.5 * tf.reduce_sum(tf.log(2 * np.pi) + u_stddev +tf.square(u_mean - a_mean) / (1e-8 + tf.exp(u_stddev)) +tf.exp(a_stddev)/(1e-8 + tf.exp(u_stddev)),1)
-    latent_cost_qau = tf.reduce_mean(latent_loss_qau)
-
-    latent_loss = latent_loss_pz - latent_loss_qz - latent_loss_qa + latent_loss_qau
-    latent_cost = latent_cost_pz - latent_cost_qz - latent_cost_qa + latent_cost_qau
-    return latent_loss,latent_cost
 
 #tensor definition
-with tf.name_scope("weight_inital"):
-    weights_de={
-        'w_':tf.Variable(tf.random_normal([2*label_size+a_size+z_size,n_hidden],mean=0.0, stddev=0.01)),
-        'out': tf.Variable(tf.random_normal([c_hidden+a_size, label_size])),
-        'out2': tf.Variable(tf.random_normal([2*z_size, label_size]))
-    }
-    biases_de = {
-    'b_': tf.Variable(tf.random_normal([n_hidden], mean=0.0, stddev=0.01)),
-    'out': tf.Variable(tf.random_normal([label_size])),
-    'out2': tf.Variable(tf.random_normal([label_size]))
-    }
-
 keep_prob = tf.placeholder("float")
-training = tf.placeholder(tf.bool)
 alpha = tf.placeholder("float")
+c_alpha = tf.placeholder("float")
 it_learning_rate=tf.placeholder("float")
-y_scale=tf.constant(10.0,dtype =tf.float32)
 input_x = tf.placeholder(dtype=tf.int32)
-dic_embeddings=tf.constant(dic_embeddings)
 l_y=tf.placeholder(dtype=tf.float32,shape=[batch_size,label_size])
 vae_y=tf.placeholder("float",[batch_size,None,label_size])  #vae_y
-vae_y_u=tf.placeholder("float",[label_size,batch_size,None,label_size])
+vae_y_u=tf.placeholder("float",[label_size,un_batch_size,None,label_size])
 target_sequence_length = tf.placeholder(tf.int32, [None], name='target_sequence_length')
 max_target_sequence_length = tf.reduce_max(target_sequence_length, name='max_target_len')
 un_target_sequence_length = tf.placeholder(tf.int32, [None], name='target_sequence_length')
 un_max_target_sequence_length = tf.reduce_max(un_target_sequence_length, name='max_target_len')
 l_decoder_embed_input = tf.placeholder(dtype=tf.int32, shape=[batch_size, None])
 l_encoder_embed_input = tf.placeholder(dtype=tf.int32, shape=[batch_size, None])
-u_encoder_embed_input = tf.placeholder(dtype=tf.int32, shape=[batch_size, None])
-u_decoder_embed_input = tf.placeholder(dtype=tf.int32, shape=[batch_size, None])
+u_encoder_embed_input = tf.placeholder(dtype=tf.int32, shape=[un_batch_size, None])
+u_decoder_embed_input = tf.placeholder(dtype=tf.int32, shape=[un_batch_size, None])
 latentscale_iter=tf.placeholder(dtype=tf.float32)
 
 
-#BN
-global_step = tf.Variable(0, trainable=False)
-MOVING_AVERAGE_DECAY = 0.99
-variable_averages = tf.train.ExponentialMovingAverage(MOVING_AVERAGE_DECAY, global_step)
-variables_averages_op = variable_averages.apply(tf.trainable_variables())
-
-l_a,l_z,states, a_mean, a_stddev,z_mean,z_stddev= encoder(l_encoder_embed_input,keep_prob)
-training_logits,masks,u_mean,u_stddev = decoder(l_decoder_embed_input,l_y,vae_y,target_sequence_length,max_target_sequence_length,l_z,states,keep_prob)
-cost_l,l_encropy_loss,l_kl_loss=get_cost_l(l_decoder_embed_input,a_mean, a_stddev,z_mean,z_stddev,training_logits,masks,u_mean,u_stddev)
-
-pred=classifer(l_encoder_embed_input,max_target_sequence_length,keep_prob=keep_prob)
+pred=classifer(l_encoder_embed_input,max_target_sequence_length-1,keep_prob = keep_prob)
 cost_c=get_cost_c(pred)
-cost_u,L_ulab,prob_y,u_encropy_loss,u_kl_loss,loss_entropy=get_cost_u(u_encoder_embed_input,u_decoder_embed_input)
-cost_lu = tf.abs(cost_u - cost_l)
-#cost=cost_c+tf.reduce_mean(cost_l+beta*cost_u)
-
-alpha_c = 1 * 1.5 * ( Train_Size + 25000 ) / Train_Size
-total_cost = l_encropy_loss * Train_Size + u_encropy_loss * 25000 \
-             + latentscale_iter * (l_kl_loss * Train_Size + u_kl_loss * 25000) \
-             + alpha_c * cost_c * Train_Size \
-             - loss_entropy * 25000
-total_cost /= (Train_Size + 25000)
+cost_l=get_cost_l(l_encoder_embed_input,l_decoder_embed_input,l_y,vae_y,target_sequence_length,max_target_sequence_length,batch_size)
+cost_u,L_ulab,prob_y=get_cost_u(u_encoder_embed_input,u_decoder_embed_input)
 
 
-cost = total_cost
-
-tvars = tf.trainable_variables()
-gradients = tf.gradients(cost, tvars, aggregation_method=tf.AggregationMethod.EXPERIMENTAL_TREE)
-grads, global_norm = tf.clip_by_global_norm(gradients, 1.0)
-
-global_step = tf.Variable(0, name="global_step", trainable=False)
-optimizer = tf.train.AdamOptimizer(learning_rate=it_learning_rate)
-train_op = optimizer.apply_gradients(zip(grads, tvars), global_step=global_step,
-                                               name='train_step')
-
+#Unlabel_LOSS=tf.reduce_mean(bata*cost_u)
+#cost=cost_c + tf.reduce_mean(cost_l+bata*cost_u)
+#cost=tf.reduce_mean(cost_l)
+cost=c_alpha*cost_c+alpha*tf.reduce_mean(cost_u)+tf.reduce_mean(cost_l)
+#cost=cost_c
+optimizer=tf.train.AdamOptimizer(learning_rate=it_learning_rate).minimize(cost)
 
 pred = tf.nn.softmax(pred)
 correct_pred=tf.equal(tf.argmax(pred,1),tf.argmax(l_y,1))
+correct_pred_f = tf.cast(correct_pred,tf.int32)
 accuracy=tf.reduce_mean(tf.cast(correct_pred,tf.float32))
 
 
+
+
 def train_model():
-    initial_learning_rate = 0.0002
-    learning_rate_len = 0.000008
-    min_kl = 0.0
-    min_kl_epoch = min_kl  # 退火参数
-    kl_lens = 0.0008
-    saver=tf.train.Saver()
+    exclude = ['classifier','classifier','bidirectional_rnn','bw','multi_rnn_cell','cell_0','basic_lstm_cell','bias','Adam']
+    variables_to_restore = slim.get_variables_to_restore(exclude=exclude)
+    saver=tf.train.Saver(variables_to_restore)
     initial = tf.global_variables_initializer()
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
-    with tf.Session(config=config) as sess:
+    with tf.Session(config=config) as  sess:
         sess.run(initial)
-        #saver.restore(sess, './temp/imdb_5_2500_con_lvae.pkt')
+        saver.restore(sess, './temp/imdb_2500_pre_l.pkt')
         print('Read train & test data')
+        initial_learning_rate = 0.0004
+        learning_rate_len = 0.000008
+        min_kl=0.0
+        min_kl_epoch=min_kl #退火参数
+        kl_lens = 0.008
+
+        #sort for train dataset
+        new_trainS,new_trainL = sort_dataset(new_train_data,train_label)
+        new_testS, new_testL = sort_dataset(new_test_data, test_label)
+        new_unlabelS,_= sort_dataset(new_unlabel_data)
+        #-----------------------------------
 
         tempU = list(set(label_list))
         TRAIN_DIC = {}
         for i in range(len(tempU)):
             TRAIN_DIC[i] = [0, 0, 0]  # use mask
-
         TRAIN_P = []
         TRAIN_R = []
         TRAIN_F1 = []
         TRAIN_ACC1 = []
+
         TEST_P = []
         TEST_R = []
         TEST_F1 = []
@@ -471,7 +416,11 @@ def train_model():
         alpha_epoch=1
         alpha_value=(2.0-1.0)/iter_num
         train_cost_list = []
-        max_acc = 0
+        T1 = 1
+        T2 = 10
+        alpha_u = 0.
+        alpha_c = 1.
+        af = 0.5
         for epoch in range(iter_num):
             #initial_learning_rate -= learning_rate_len
             if(initial_learning_rate<=0):
@@ -482,27 +431,37 @@ def train_model():
             label_cost=0
             unlabel_cost=0
             classifier_cost=0
-            lu_abs_cost = 0
+            if epoch > T1:
+                alpha_u = 0.5
+                alpha_c = 0.2
+                if epoch > T2:
+                    alpha_u = 1.
+                    alpha_c = 0.
             while step < len(new_trainS) // batch_size:
                 start_i = step * batch_size
+                un_start_i = step * un_batch_size
                 input_x = new_trainS[start_i:start_i + batch_size]
-                input_ux=new_unlabelS[start_i:start_i + batch_size]
+                input_ux=new_unlabelS[un_start_i:un_start_i + un_batch_size]
 
-                sources_batch = pad_sentence_batch(input_x, vocab_to_int['<PAD>'])
+                sources_batch = pad_sentence_batch(input_x, vocab_to_int['<PAD>'])  #padding the same(max lenth)
+                encode_batch=eos_sentence_batch(input_x,vocab_to_int['<EOS>'])      #append <EOS> to seq
+                input_batch=pad_sentence_batch(encode_batch,vocab_to_int['<PAD>'])  #padding
+
                 un_sources_batch = pad_sentence_batch(input_ux, vocab_to_int['<PAD>'])
-
+                un_encode_batch=eos_sentence_batch(input_ux,vocab_to_int['<EOS>'])
+                un_input_batch=pad_sentence_batch(un_encode_batch,vocab_to_int['<PAD>'])
 
                 #unlabel
                 un_pad_source_lengths = []
                 for source in input_ux:
-                    un_pad_source_lengths.append(len(source))  # +1
+                    un_pad_source_lengths.append(len(source)+1)  # +1 is add <GO> word lenth in decoder
                 #label
                 pad_source_lengths = []
                 for source in input_x:
-                    pad_source_lengths.append(len(source))   #+1
+                    pad_source_lengths.append(len(source)+1)   #+1
 
-                target_maxlength=len(sources_batch[0]) #get max length  +1
-                un_target_maxlength = len(un_sources_batch[0])   # get max length  +1
+                target_maxlength=len(input_batch[0])+1 #get max length  +1
+                un_target_maxlength = len(un_input_batch[0])+1   # get max length  +1
 
                 if min_kl_epoch<1.0:
                     min_kl_epoch = min_kl + count* kl_lens
@@ -519,16 +478,17 @@ def train_model():
                     batch_y.append(xsy_step)
                 decode_uy=creat_u_y_scopus(un_target_maxlength)
 
-                lu_cost,p_y,ulab,pred_batch,c_pred,op,batch_cost,c_cost,l_cost,u_cost=sess.run([cost_lu,prob_y,L_ulab,pred,correct_pred,train_op,cost,cost_c,cost_l,cost_u],
+                ulab,p_y,pred_batch,c_pred,op,batch_cost,c_cost,l_cost,u_cost=sess.run([L_ulab,prob_y,pred,correct_pred,optimizer,cost,cost_c,cost_l,cost_u],
                                                                               feed_dict={vae_y:decode_y,vae_y_u:decode_uy,
-                                                                              l_encoder_embed_input:sources_batch, l_decoder_embed_input:sources_batch,
-                                                                              l_y:batch_y,training:True,
-                                                                              u_decoder_embed_input: un_sources_batch,u_encoder_embed_input:un_sources_batch,
+                                                                              l_encoder_embed_input:sources_batch, l_decoder_embed_input:input_batch,
+                                                                              l_y:batch_y,
+                                                                              u_decoder_embed_input: un_input_batch,u_encoder_embed_input:un_sources_batch,
                                                                               it_learning_rate: initial_learning_rate,latentscale_iter:min_kl_epoch,
                                                                               keep_prob: 0.5,target_sequence_length: pad_source_lengths,
-                                                                              un_target_sequence_length:un_pad_source_lengths,alpha:alpha_epoch})
-                #print "p_y:",p_y,"ulab:",ulab
+                                                                              un_target_sequence_length:un_pad_source_lengths,alpha:alpha_u,c_alpha:alpha_c})
                 #computing for P R F1
+                # if (step % 10 == 0 and step is not 0):
+                #     print "p_y", p_y
                 for i in range(len(pred_batch)):
                     value=pred_batch[i]
                     top1=np.argpartition(a=-value,kth=0)[:1]
@@ -537,17 +497,15 @@ def train_model():
                         acc+=1
                         TRAIN_DIC.get(user_mask_id[i])[0]+=1 #REAL value a
                 #print logit.shape
-                if(step%10==0 and step is not 0):
+                if(step%100==0 and step is not 0):
                     print ('min_kl_epoch',min_kl_epoch)
-                    print ('TRAIN LOSS', train_cost, 'LABEL COST', label_cost, 'Unlabel Cost', unlabel_cost, 'lu Cost',lu_abs_cost,'Classifier Cost', classifier_cost)
+                    print ('TRAIN LOSS', train_cost, 'LABEL COST', label_cost, 'Unlabel Cost', unlabel_cost, 'Classifier Cost', classifier_cost)
                     print ("\n")
                 loss=np.mean(batch_cost)
                 lbatch_cost=np.mean(l_cost)
                 ubatch_cost=np.mean(u_cost)
                 cbatch_cost=np.mean(c_cost) #*alpha_epoch
-                lubatch_cost=np.mean(lu_cost)
 
-                lu_abs_cost += lubatch_cost
                 classifier_cost+=cbatch_cost
                 unlabel_cost+=ubatch_cost
                 label_cost+=lbatch_cost
@@ -557,7 +515,7 @@ def train_model():
                 step+=1 # while
                 count+=1
             #out of bacth
-            print "p_y:", p_y, "ulab:", ulab
+            #print "ulab",ulab,"p_y",p_y
             alpha_epoch+=alpha_value
 
             # Precision Recall, F1
@@ -585,27 +543,41 @@ def train_model():
             print ('total train number', step * batch_size, 'learning rate', initial_learning_rate)
             print ('iter', epoch, 'Accuracy', acc / (step * batch_size),'TRAIN LOSS', train_cost)
             print ('\nepoch TEST')
-            TEST_p, TEST_r, TEST_f1, TEST_acc1= test_model(sess, new_testS, new_testL, epoch)
+            TEST_p, TEST_r, TEST_f1, TEST_acc1,  = test_model(sess, new_testS, new_testL, epoch)
             TEST_P.append(TEST_p)
             TEST_R.append(TEST_r)
             TEST_F1.append(TEST_f1)
             TEST_ACC1.append(TEST_acc1)
             Learning_rate.append(initial_learning_rate)
-            #save the best model
-            if TEST_acc1 > max_acc:
-                max_acc = TEST_acc1
-                model_path = './temp/imdb_2_%d_BN_lvae.pkt'%Train_Size
-                saver.save(sess, model_path)
-        save_metrics(Learning_rate, TEST_P, TEST_R, TEST_F1, TEST_ACC1, root='./out_data/imdb_vae_ltests.txt')
-        save_metrics(Learning_rate, TRAIN_P, TRAIN_R, TRAIN_F1, TRAIN_ACC1,root='./out_data/imdb_vae_ltrains.txt')
+            # if len(train_cost_list)>5:
+            #     if abs(train_cost_list[-1] - train_cost_list[-5]) < 0.01:
+            #         break
+        #model_path = './temp/imdb_%d_pre_l.pkt' % Train_Size
+        #saver.save(sess, model_path)
+        save_metrics(Learning_rate, TEST_P, TEST_R, TEST_F1, TEST_ACC1, root='./out_data/bk_vae_ltests.txt')
+        save_metrics(Learning_rate, TRAIN_P, TRAIN_R, TRAIN_F1, TRAIN_ACC1,root='./out_data/bk_vae_ltrains.txt')
         draw_pic_metric(TRAIN_P, TRAIN_R, TRAIN_F1, TRAIN_ACC1, name='train')
         draw_pic_metric(TEST_P, TEST_R, TEST_F1, TEST_ACC1, name='test')
+
 
 def eos_sentence_batch(sentence_batch,eos_in):
     return [sentence+[eos_in] for sentence in sentence_batch] #
 def pad_sentence_batch(sentence_batch, pad_int):
     max_sentence = max([len(sentence) for sentence in sentence_batch]) #取最大长度
     return [sentence + [pad_int] * (max_sentence - len(sentence)) for sentence in sentence_batch]
+def sort_dataset(dataset,label = None):
+    index_T = {}
+    new_data = []
+    new_label = []
+    for i in range(len(dataset)):
+        index_T[i] = len(dataset[i])
+    temp_size = sorted(index_T.items(), key=lambda item: item[1])
+    for i in range(len(temp_size)):
+        id = temp_size[i][0]
+        new_data.append(dataset[id])
+        if label:
+            new_label.append(label[id])
+    return new_data,new_label
 def test_model(sess,testS,testL,epoch):
     step = 0
     acc = 0
@@ -616,31 +588,40 @@ def test_model(sess,testS,testL,epoch):
     while step < len(testS) // batch_size:  #
         start_i = step * batch_size
         input_x = testS[start_i:start_i + batch_size]
-
+        #
         sources_batch = pad_sentence_batch(input_x, vocab_to_int['<PAD>'])
+        encode_batch = eos_sentence_batch(input_x, vocab_to_int['<EOS>'])
+        input_batch = pad_sentence_batch(encode_batch, vocab_to_int['<PAD>'])
 
+        #
         pad_source_lengths = []
         user_mask_id = []
         for source in input_x:
-            pad_source_lengths.append(len(source)) #+1
+            pad_source_lengths.append(len(source)+1) #+1
         batch_y = []
         for y_i in range(start_i, start_i + batch_size):
             xsy_step = get_onehot(get_mask_index(testL[y_i], label_list))
             user_mask_id.append(get_mask_index(testL[y_i], label_list))
             TEST_DIC.get(get_mask_index(testL[y_i], label_list))[2] += 1  # Groud value Groud Truth a+c
             batch_y.append(xsy_step)
-        c_pred,pred_batch=sess.run([correct_pred,pred],feed_dict={l_encoder_embed_input:sources_batch,l_y: batch_y,keep_prob: 1.0,
-                                                                  target_sequence_length: pad_source_lengths,training:False})
+        f_pred,c_pred,pred_batch=sess.run([correct_pred_f,correct_pred,pred],feed_dict={l_encoder_embed_input:sources_batch, l_y: batch_y,
+                                                                           keep_prob: 1.0,l_decoder_embed_input: input_batch,
+                                                                           target_sequence_length: pad_source_lengths})
         for i in range(len(pred_batch)):
             value = pred_batch[i]
             #print value
-            top1 = np.argpartition(a=-value,kth=0)[:1]
-            TEST_DIC.get(top1[0])[1] += 1  # recommend value a+b   train_dic [0,0,0]  correct_pred,pred,all
+            top1 = np.argpartition(a=-value, kth=0)[:1]
+            TEST_DIC.get(top1[0])[1] += 1  # recommend value a+b
 
             if c_pred[i] == True:
                 acc += 1
                 TEST_DIC.get(user_mask_id[i])[0] += 1  # REAL value a
         step+=1 # while
+    c_y = np.concatenate((np.array(pred_batch), np.array(batch_y)), axis=1)
+    #c_y = np.concatenate((np.array(f_pred), c_y), axis=1)
+    for i,j in enumerate(c_y.tolist()):
+        j.append(int(f_pred[i]))
+        print j,i
     # Precision Recall, F1
     P = []
     R = []
@@ -660,7 +641,7 @@ def test_model(sess,testS,testL,epoch):
     print ('iter', epoch, 'Accuracy For TEST', acc / (step * batch_size), 'total test number', step * batch_size)
     print "\n"
     return macro_P, macro_R, macro_F1, acc / (step * batch_size)
-def save_metrics(LEARN_RATE,TRAIN_P,TRAIN_R,TRAIN_F1,TRAIN_ACC1,root='result/imdb_metric_vae.txt'):
+def save_metrics(LEARN_RATE,TRAIN_P,TRAIN_R,TRAIN_F1,TRAIN_ACC1,root='result/bk_metric_vae.txt'):
     files=open(root,'a+')
     files.write('epoch \t learning_rate \t Precision \t Recall \t F1 \t ACC1 \n')
     for i in range(len(TRAIN_P)):
@@ -688,19 +669,9 @@ def draw_pic_metric(P,R,F1,ACC1,name='train'):
     plt.title(name)
     plt.legend(loc='upper right', shadow=True)
     plt.ylabel('value')
-    plt.xlabel('iteration')
+    plt.xlabel('Training iteration')
     plt.show()
 
 if __name__ == "__main__":
-    if is_training:
-        print "---------------train model------------------"
-        train_model()
-    else:
-        print "---------------test model------------------"
-        saver = tf.train.Saver()
-        initial = tf.global_variables_initializer()
-        with tf.Session() as sess:
-            sess.run(initial)
-            saver.restore(sess, './temp/imdb_2_2500_con_lvae.pkt')
-            TEST_p, TEST_r, TEST_f1, TEST_acc1, = test_model(sess, new_testS, new_testL, epoch=0)
+    train_model()
     print ('------------Model END------------')
